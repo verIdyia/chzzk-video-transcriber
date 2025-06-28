@@ -29,7 +29,7 @@
 
 ```bash
 # 저장소 클론
-git clone [repository-url]
+git clone https://github.com/verIdyia/chzzk-video-transcriber.git
 cd chzzk-video-transcriber
 
 # Docker Compose로 실행
