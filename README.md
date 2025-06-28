@@ -41,7 +41,10 @@ docker-compose up --build
 
 ### 로컬 설치 (고급 사용자용)
 
-⚠️ **주의**: PyTorch 생태계의 복잡한 의존성으로 인해 Docker 사용을 강력히 권장합니다.
+⚠️ **중요 주의사항**: 
+- **Linux/macOS 환경 권장** - Windows에서는 호환성 문제가 있을 수 있습니다
+- **PyTorch 생태계의 복잡한 의존성**으로 인해 Docker 사용을 강력히 권장합니다
+- **FFmpeg 경로 문제** 등으로 Windows에서 예상치 못한 오류 발생 가능
 
 ```bash
 # 가상환경 생성
@@ -160,6 +163,13 @@ URL: https://chzzk.naver.com/video/1234567890
 ## ⚠️ 주의사항
 
 ### 시스템 요구사항
+
+#### 운영체제
+- **권장**: Linux (Ubuntu 20.04+), macOS (Intel/Apple Silicon)
+- **제한적 지원**: Windows (Docker Desktop 사용 권장)
+- **Docker**: 모든 플랫폼에서 안정적 동작 보장
+
+#### 하드웨어
 - **메모리**: 최소 8GB RAM (16GB 권장, CPU 사용 시 32GB+ 권장)
 - **저장공간**: 영상 크기의 2배 이상
 - **GPU**: 
