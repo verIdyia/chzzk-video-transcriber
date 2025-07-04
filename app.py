@@ -7,7 +7,7 @@ import torch
 import requests
 import json
 import time
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 # Import our modules
 from config_manager import ConfigManager
@@ -60,14 +60,38 @@ class TranscriptionApp:
         
         return total_seconds * 1000
     
-    def extract_chat_message(self, chat: Dict) -> str:
-        """채팅 메시지를 포맷된 문자열로 추출"""
+    def clean_cookies(self, cookies_input: str) -> Optional[str]:
+        """쿠키 문자열을 정리하여 HTTP 헤더에 사용 가능한 형태로 변환"""
+        if not cookies_input or not cookies_input.strip():
+            return None
+        
+        # 개행문자와 여분의 공백 제거
+        cleaned = cookies_input.replace('\n', ' ').replace('\r', ' ')
+        
+        # 여러 공백을 하나로 통합
+        import re
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        
+        # 세미콜론으로 끝나지 않으면 추가
+        if not cleaned.endswith(';'):
+            cleaned += ';'
+        
+        return cleaned
+
+    def extract_chat_message(self, chat: Dict, start_time_ms: int = 0) -> str:
+        """채팅 메시지를 포맷된 문자열로 추출 (상대적 타임스탬프 적용)"""
         try:
             profile_data = json.loads(chat.get("profile", "{}"))
             nickname = profile_data.get("nickname", "Unknown")
             content = chat.get("content", "")
             player_time = chat.get("playerMessageTime", 0)
-            timestamp = self.milliseconds_to_timestamp(player_time)
+            
+            # 상대적 타임스탬프 계산 (구간 시작 시간 기준)
+            relative_time = player_time - start_time_ms
+            if relative_time < 0:
+                relative_time = 0
+            
+            timestamp = self.milliseconds_to_timestamp(relative_time)
 
             if chat.get("messageTypeCode") == 10:
                 return f"{timestamp} [도네이션] [{nickname}] : {content}"
@@ -79,7 +103,7 @@ class TranscriptionApp:
     def collect_chzzk_video_chats(self, video_id: str, auth_cookies: Optional[str] = None,
                                  start_time_ms: Optional[int] = None, 
                                  end_time_ms: Optional[int] = None) -> List[str]:
-        """지정된 시간 구간의 채팅 수집"""
+        """지정된 시간 구간의 채팅 수집 (chat.py 방식)"""
         base_url = f"https://api.chzzk.naver.com/service/v1/videos/{video_id}/chats"
         headers = {
             "User-Agent": (
@@ -90,9 +114,12 @@ class TranscriptionApp:
             "Referer": f"https://chzzk.naver.com/video/{video_id}",
         }
         if auth_cookies:
-            headers["Cookie"] = auth_cookies
+            # 쿠키 정리
+            cleaned_cookies = self.clean_cookies(auth_cookies)
+            if cleaned_cookies:
+                headers["Cookie"] = cleaned_cookies
 
-        all_chats: List[tuple[int, str]] = []
+        all_chats = []
         current_time = start_time_ms if start_time_ms is not None else 0
         previous_size = 50
         max_requests = 1000
@@ -106,14 +133,24 @@ class TranscriptionApp:
 
             try:
                 response = requests.get(base_url, headers=headers, params=params)
-            except requests.exceptions.RequestException:
+            except requests.exceptions.RequestException as e:
+                print(f"네트워크 오류: {e}")
                 break
 
             if response.status_code != 200:
+                print(f"API 요청 실패: HTTP {response.status_code}")
+                if response.status_code == 403:
+                    print("403 오류: 성인인증이 필요할 수 있습니다.")
                 break
 
-            data = response.json()
+            try:
+                data = response.json()
+            except:
+                print("JSON 파싱 실패")
+                break
+                
             if data.get("code") != 200:
+                print(f"API 응답 에러: {data.get('message', 'Unknown error')}")
                 break
 
             content = data.get("content", {})
@@ -128,24 +165,28 @@ class TranscriptionApp:
             for chat in batch:
                 player_time = chat.get("playerMessageTime", 0)
                 
+                # 시작 시간 체크
                 if start_time_ms is not None and player_time < start_time_ms:
                     continue
                     
+                # 종료 시간 체크
                 if end_time_ms is not None and player_time > end_time_ms:
                     continue
                     
-                chat_message = self.extract_chat_message(chat)
+                chat_message = self.extract_chat_message(chat, start_time_ms or 0)
                 all_chats.append((player_time, chat_message))
 
             next_time = content.get("nextPlayerMessageTime")
             if next_time is None or next_time <= current_time:
                 break
                 
+            # 종료 시간을 넘어섰으면 중단
             if end_time_ms is not None and next_time > end_time_ms:
                 break
 
             current_time = next_time
             request_count += 1
+
             time.sleep(0.3)
 
         # 중복 제거 및 시간순 정렬
@@ -153,6 +194,7 @@ class TranscriptionApp:
         unique_chats.sort(key=lambda x: x[0])
         chat_messages = [msg for _, msg in unique_chats]
         return chat_messages
+    
         
     def setup_page_config(self):
         """Configure Streamlit page settings."""
@@ -211,7 +253,8 @@ class TranscriptionApp:
   NID_AUT=값
   NID_SES=값
 
-브라우저 개발자 도구 → Application → Cookies → chzzk.naver.com에서 확인 가능"""
+브라우저 개발자 도구 → Application → Cookies → chzzk.naver.com에서 확인 가능
+※ 개행문자와 여분의 공백은 자동으로 정리됩니다."""
             )
             
             # Output format
@@ -367,7 +410,7 @@ class TranscriptionApp:
             st.error(error)
             return
         
-        cookies = config["cookies_input"] if config["cookies_input"].strip() else None
+        cookies = self.clean_cookies(config["cookies_input"]) if config["cookies_input"].strip() else None
         stream_data, error = ChzzkDownloader.get_video_streams(video_no, cookies)
         if error:
             st.error(error)
@@ -456,14 +499,14 @@ class TranscriptionApp:
         
         # Step 1: Get video information
         status_text.text("📋 비디오 정보를 가져오는 중...")
-        progress_bar.progress(10)
+        progress_bar.progress(5)
         
         video_no, error = ChzzkDownloader.extract_video_info(video_url)
         if error:
             st.error(error)
             return
         
-        cookies = config["cookies_input"] if config["cookies_input"].strip() else None
+        cookies = self.clean_cookies(config["cookies_input"]) if config["cookies_input"].strip() else None
         stream_data, error = ChzzkDownloader.get_video_streams(video_no, cookies)
         if error:
             st.error(error)
@@ -480,11 +523,50 @@ class TranscriptionApp:
             stream_data, selected_stream, download_path, config["output_format"], enable_chat_collection
         )
         
-        # Step 4: Download video
+        # Step 4: Collect chat first (if enabled)
+        chat_messages = []
+        if enable_chat_collection and chat_path:
+            status_text.text("💬 채팅을 수집하는 중...")
+            progress_bar.progress(10)
+            
+            start_time_ms = start_seconds * 1000
+            end_time_ms = end_seconds * 1000
+            
+            # 쿠키 정리
+            cleaned_cookies = self.clean_cookies(cookies) if cookies else None
+            
+            # Create expander for debug logs
+            with st.expander("🔍 채팅 수집 디버그 로그", expanded=False):
+                debug_container = st.empty()
+                
+            # Capture debug output
+            import io
+            import sys
+            from contextlib import redirect_stdout
+            
+            debug_output = io.StringIO()
+            with redirect_stdout(debug_output):
+                chat_messages = self.collect_chzzk_video_chats(
+                    video_no, cleaned_cookies, start_time_ms, end_time_ms
+                )
+            
+            # Display debug output
+            debug_text = debug_output.getvalue()
+            with st.expander("🔍 채팅 수집 디버그 로그", expanded=True):
+                st.text_area("Debug Output", debug_text, height=300)
+            
+            if chat_messages:
+                with open(chat_path, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(chat_messages))
+                st.success(f"채팅 수집 완료: {len(chat_messages)}개 메시지")
+            else:
+                st.warning("채팅이 수집되지 않았습니다. 영상 처리를 계속합니다.")
+        
+        # Step 5: Download video
         status_text.text("📥 비디오를 다운로드하는 중...")
         
         def update_download_progress(progress):
-            progress_bar.progress(10 + int(progress * 0.4))
+            progress_bar.progress(20 + int(progress * 0.3))
         
         success, message = ChzzkDownloader.download_video_segment(
             selected_stream['base_url'], video_path, 
@@ -495,11 +577,10 @@ class TranscriptionApp:
             st.error(message)
             return
         
-        # Step 5: Process audio and transcription
+        # Step 6: Process audio and transcription
         self._process_audio_transcription(
             video_path, audio_path, transcript_path, chat_path, config, 
-            enable_diarization, enable_chat_collection, stream_data, 
-            start_seconds, end_seconds, progress_bar, status_text
+            enable_diarization, chat_messages, progress_bar, status_text
         )
         
         # Cleanup temporary files
@@ -541,13 +622,12 @@ class TranscriptionApp:
 
     def _process_audio_transcription(self, video_path: str, audio_path: str, 
                                    transcript_path: str, chat_path: Optional[str], config: Dict[str, Any], 
-                                   enable_diarization: bool, enable_chat_collection: bool, 
-                                   stream_data: Dict[str, Any], start_seconds: int, end_seconds: int,
+                                   enable_diarization: bool, chat_messages: List[str],
                                    progress_bar, status_text):
         """Process audio extraction and transcription."""
         # Step 5: Extract audio
         status_text.text("🎵 오디오를 추출하는 중...")
-        progress_bar.progress(50)
+        progress_bar.progress(55)
         
         audio_processor = AudioProcessor(
             config["whisper_model"],
@@ -562,63 +642,35 @@ class TranscriptionApp:
         
         # Step 6: Load models
         status_text.text("🤖 AI 모델을 로드하는 중...")
-        progress_bar.progress(60)
+        progress_bar.progress(65)
         audio_processor.load_models()
         
         # Step 7: Speaker diarization (optional)
         diarization = None
         if enable_diarization:
             status_text.text("👥 화자분리를 수행하는 중...")
-            progress_bar.progress(70)
-            diarization = audio_processor.perform_diarization(audio_path)
-        
-        # Step 7.5: Collect chat (if enabled)
-        chat_messages = []
-        if enable_chat_collection and chat_path:
-            status_text.text("💬 채팅을 수집하는 중...")
             progress_bar.progress(75)
-            
-            # Extract video ID from URL
-            video_no, error = ChzzkDownloader.extract_video_info(st.session_state.get('video_url', ''))
-            if not error:
-                start_time_ms = start_seconds * 1000
-                end_time_ms = end_seconds * 1000
-                cookies = config["cookies_input"] if config["cookies_input"].strip() else None
-                
-                chat_messages = self.collect_chzzk_video_chats(
-                    video_no, cookies, start_time_ms, end_time_ms
-                )
-                
-                if chat_messages:
-                    with open(chat_path, 'w', encoding='utf-8') as f:
-                        f.write('\n'.join(chat_messages))
+            diarization = audio_processor.perform_diarization(audio_path)
 
         # Step 8: Speech recognition
         status_text.text("🎙️ 음성인식을 수행하는 중...")
-        progress_bar.progress(80)
+        progress_bar.progress(85)
         
         whisper_result, error = audio_processor.transcribe_with_whisper(audio_path)
         if error:
             st.error(error)
             return
         
-        # Step 9: Generate transcript
+        # Step 9: Generate transcript (without chat)
         status_text.text("📝 트랜스크립트를 생성하는 중...")
-        progress_bar.progress(90)
+        progress_bar.progress(95)
         
         if config["output_format"] == "srt":
             transcript = audio_processor.create_srt_transcript(whisper_result, diarization)
         else:
             transcript = audio_processor.create_transcript(whisper_result, diarization)
         
-        # Add chat messages to transcript if available
-        if enable_chat_collection and chat_messages:
-            transcript += "\n\n" + "="*50 + "\n"
-            transcript += "📋 채팅 로그\n"
-            transcript += "="*50 + "\n\n"
-            transcript += '\n'.join(chat_messages)
-        
-        # Save transcript
+        # Save transcript (without chat)
         with open(transcript_path, 'w', encoding='utf-8') as f:
             f.write(transcript)
         
@@ -627,27 +679,38 @@ class TranscriptionApp:
         status_text.text("✅ 완료!")
         
         # Display results
-        self._display_results(stream_data, transcript, transcript_path, chat_path,
-                            st.session_state.get('start_time'), st.session_state.get('end_time'), 
-                            enable_chat_collection, len(chat_messages) if chat_messages else 0)
+        self._display_results(transcript, transcript_path, chat_path, chat_messages)
 
-    def _display_results(self, stream_data: Dict[str, Any], transcript: str, 
-                        transcript_path: str, chat_path: Optional[str], start_time: str, end_time: str,
-                        enable_chat_collection: bool, chat_count: int):
+    def _display_results(self, transcript: str, transcript_path: str, 
+                        chat_path: Optional[str], chat_messages: List[str]):
         """Display processing results."""
         st.success("트랜스크립트 생성이 완료되었습니다!")
         
         # Video information
         with st.expander("📋 비디오 정보", expanded=True):
-            st.write(f"**제목:** {stream_data['title']}")
-            st.write(f"**작성자:** {stream_data['author']}")
+            video_url = st.session_state.get('video_url', '')
+            start_time = st.session_state.get('start_time', '')
+            end_time = st.session_state.get('end_time', '')
+            
+            st.write(f"**영상 URL:** {video_url}")
             st.write(f"**구간:** {start_time} - {end_time}")
-            if enable_chat_collection:
-                st.write(f"**수집된 채팅:** {chat_count}개")
+            if chat_messages:
+                st.write(f"**수집된 채팅:** {len(chat_messages)}개")
         
         # Transcript display
         with st.expander("📝 트랜스크립트", expanded=True):
             st.text_area("", transcript, height=400)
+        
+        # Chat display (if available)
+        if chat_messages:
+            with st.expander("💬 채팅 로그", expanded=False):
+                st.text_area("", '\n'.join(chat_messages), height=300)
+        
+        # Synchronized display (if chat available)
+        if chat_messages:
+            with st.expander("🔄 트랜스크립트 + 채팅 동기화", expanded=False):
+                synchronized_content = self._create_synchronized_content(transcript, chat_messages)
+                st.text_area("", synchronized_content, height=500)
         
         # Download buttons
         col1, col2 = st.columns(2)
@@ -662,7 +725,7 @@ class TranscriptionApp:
                 )
         
         with col2:
-            if enable_chat_collection and chat_path and os.path.exists(chat_path):
+            if chat_messages and chat_path and os.path.exists(chat_path):
                 with open(chat_path, 'rb') as f:
                     st.download_button(
                         label="💬 채팅 로그 다운로드",
@@ -670,6 +733,40 @@ class TranscriptionApp:
                         file_name=os.path.basename(chat_path),
                         mime="text/plain"
                     )
+
+    def _create_synchronized_content(self, transcript: str, chat_messages: List[str]) -> str:
+        """트랜스크립트와 채팅을 시간순으로 동기화하여 병합"""
+        import re
+        
+        # 트랜스크립트에서 타임스탬프 추출
+        transcript_lines = []
+        for line in transcript.split('\n'):
+            time_match = re.search(r'(\d{2}:\d{2}:\d{2})', line)
+            if time_match:
+                time_str = time_match.group(1)
+                h, m, s = map(int, time_str.split(':'))
+                time_seconds = h * 3600 + m * 60 + s
+                transcript_lines.append((time_seconds, f"[음성] {line}"))
+        
+        # 채팅에서 타임스탬프 추출
+        chat_lines = []
+        for chat_msg in chat_messages:
+            time_match = re.search(r'\[(\d{2}):(\d{2}):(\d{2})\]', chat_msg)
+            if time_match:
+                h, m, s = map(int, time_match.groups())
+                time_seconds = h * 3600 + m * 60 + s
+                chat_lines.append((time_seconds, f"[채팅] {chat_msg}"))
+        
+        # 시간순으로 병합
+        all_lines = transcript_lines + chat_lines
+        all_lines.sort(key=lambda x: x[0])
+        
+        # 결과 생성
+        result = []
+        for _, content in all_lines:
+            result.append(content)
+        
+        return '\n'.join(result)
 
     def run(self):
         """Run the main application."""
