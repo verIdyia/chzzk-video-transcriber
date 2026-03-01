@@ -17,12 +17,13 @@ class ConfigManager:
     
     DEFAULT_CONFIG = {
         "download_path": "./downloads",
-        "whisper_model": "base",
+        "whisper_model": "large-v3-turbo",
         "huggingface_token": "",
         "naver_cookies": "",
         "output_format": "txt",
         "default_quality": "best",
-        "use_gpu": True
+        "use_gpu": True,
+        "diarization_backend": "auto"
     }
     
     def __init__(self, config_file: str = "./config/config.json"):
@@ -116,7 +117,7 @@ class ConfigManager:
     
     def get_whisper_models(self) -> list:
         """Get list of available Whisper models."""
-        return ["tiny", "base", "small", "medium", "large", "large-v2", "large-v3"]
+        return ["large-v3", "large-v3-turbo", "turbo", "large-v2", "medium", "small", "base", "tiny"]
     
     def get_output_formats(self) -> list:
         """Get list of available output formats."""
@@ -140,10 +141,10 @@ class ConfigManager:
         if not download_path:
             errors["download_path"] = "다운로드 경로가 설정되지 않았습니다."
         
-        # Validate whisper model
+        # Validate whisper model (allow custom model names for HuggingFace models)
         whisper_model = self.get("whisper_model")
-        if whisper_model not in self.get_whisper_models():
-            errors["whisper_model"] = f"지원하지 않는 Whisper 모델: {whisper_model}"
+        if not whisper_model:
+            errors["whisper_model"] = "Whisper 모델이 설정되지 않았습니다."
         
         # Validate output format
         output_format = self.get("output_format")

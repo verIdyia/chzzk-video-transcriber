@@ -9,11 +9,13 @@ numpy>=1.24.0
 scipy>=1.11.0
 soundfile>=0.12.0
 librosa>=0.10.0
-tiktoken>=0.5.0
-einops>=0.7.0
 
-# Whisper (speech recognition)
-openai-whisper>=20231117
+# Whisper - faster-whisper (primary, 4x faster than openai-whisper)
+faster-whisper>=1.1.0
 
-# Speaker diarization (optional)
-pyannote.audio>=3.1.0
+# Speaker diarization - no HuggingFace token needed
+wespeaker @ git+https://github.com/wenet-e2e/wespeaker.git
+simple-diarizer
+
+# Speaker diarization - optional (requires HuggingFace token)
+# pyannote.audio>=3.1.0
