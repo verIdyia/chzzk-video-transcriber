@@ -32,6 +32,7 @@ GPU 설정이나 패키지 설치 없이 바로 사용할 수 있습니다.
 1. `chzzk_transcriber_colab.ipynb` 파일을 Google Colab에서 열기
 2. 런타임 → 런타임 유형 변경 → **T4 GPU** 선택
 3. 위에서부터 순서대로 셀 실행
+4. 안 되는 버그를 확인... 수정 진행 중
 
 ### Docker (로컬 서버용)
 
