@@ -19,12 +19,12 @@ except ImportError:
 class ChzzkDownloader:
     """Enhanced CHZZK video downloader with cookie support for age-restricted content."""
     
-    # API endpoints
-    VOD_URL = "https://apis.naver.com/neonplayer/vodplay/v2/playback/{video_id}?key={in_key}"
-    VOD_INFO = "https://api.chzzk.naver.com/service/v2/videos/{video_no}"
+    # API endpoints (v3 for video info, v1 for playback with additional params)
+    VOD_URL = "https://apis.naver.com/neonplayer/vodplay/v1/playback/{video_id}?key={in_key}&env=real&lc=ko&cpl=ko"
+    VOD_INFO = "https://api.chzzk.naver.com/service/v3/videos/{video_no}"
     
     # Enhanced User-Agent for better compatibility
-    USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     
     @staticmethod
     def parse_cookies(cookie_string: str) -> Dict[str, str]:
@@ -134,13 +134,48 @@ class ChzzkDownloader:
             author = content.get('channel', {}).get('channelName', 'Unknown')
             title = content.get('videoTitle', 'Unknown Title')
             duration = content.get('duration', 0)
-            
-            # Get stream qualities with cookie support
-            stream_qualities = ChzzkDownloader._parse_dash_manifest(video_url, cookies)
-            if not stream_qualities:
-                stream_qualities = ChzzkDownloader._get_fallback_streams(video_url, cookies)
+            vod_status = content.get('vodStatus', '')
+
+            # Get stream qualities based on vodStatus
+            stream_qualities = None
+
+            if vod_status == 'ABR_HLS':
+                # Normal case: fetch DASH/MPD manifest
+                stream_qualities = ChzzkDownloader._parse_dash_manifest(video_url, cookies)
                 if not stream_qualities:
-                    return None, "스트림 URL을 가져올 수 없습니다."
+                    stream_qualities = ChzzkDownloader._get_fallback_streams(video_url, cookies)
+            elif vod_status == 'UPLOAD':
+                # VOD is still being re-encoded, try liveRewindPlaybackJson
+                live_rewind_json = content.get('liveRewindPlaybackJson')
+                if live_rewind_json:
+                    import json as json_mod
+                    try:
+                        playback_data = json_mod.loads(live_rewind_json)
+                        media_list = playback_data.get('media', [])
+                        if media_list:
+                            hls_path = media_list[0].get('path')
+                            if hls_path:
+                                stream_qualities = [{
+                                    'quality_label': 'auto',
+                                    'resolution': 'auto',
+                                    'base_url': hls_path,
+                                    'bandwidth': 0,
+                                    'width': 0,
+                                    'height': 0,
+                                    'mime_type': 'application/x-mpegURL'
+                                }]
+                    except (ValueError, KeyError):
+                        pass
+                if not stream_qualities:
+                    return None, "영상이 아직 인코딩 중입니다. 잠시 후 다시 시도해주세요."
+            else:
+                # Unknown status: try DASH first, then fallback
+                stream_qualities = ChzzkDownloader._parse_dash_manifest(video_url, cookies)
+                if not stream_qualities:
+                    stream_qualities = ChzzkDownloader._get_fallback_streams(video_url, cookies)
+
+            if not stream_qualities:
+                return None, "스트림 URL을 가져올 수 없습니다."
             
             return {
                 'author': author,
@@ -176,58 +211,74 @@ class ChzzkDownloader:
                 response = session.get(video_url, headers=headers, timeout=30)
                 response.raise_for_status()
                 
-                # Check content type
+                # Check content type - also try parsing if content starts with XML
                 content_type = response.headers.get('content-type', '').lower()
+                response_text = response.text.strip()
                 if 'xml' not in content_type and 'dash' not in content_type:
-                    continue
+                    if not response_text.startswith('<?xml') and not response_text.startswith('<MPD'):
+                        continue
                 
                 root = ET.fromstring(response.text)
                 ns = {"mpd": "urn:mpeg:dash:schema:mpd:2011"}
                 
                 stream_qualities = []
                 processed_qualities = set()  # Avoid duplicates
-                
-                # Process AdaptationSets
+
+                def _process_representation(representation, fallback_base_url=None, fallback_mime='video/mp4'):
+                    """Process a single Representation element."""
+                    width = representation.get('width')
+                    height = representation.get('height')
+                    bandwidth = representation.get('bandwidth')
+                    rep_id = representation.get('id', '')
+                    mime_type = representation.get('mimeType', fallback_mime)
+
+                    # Get representation-specific base URL
+                    rep_base_url_element = representation.find("mpd:BaseURL", namespaces=ns)
+                    base_url = rep_base_url_element.text if rep_base_url_element is not None else fallback_base_url
+
+                    if width and height and base_url:
+                        # Skip HLS-only representations
+                        if base_url.rstrip('/').endswith('/hls'):
+                            return
+                        quality_key = f"{width}x{height}_{mime_type}"
+                        if quality_key not in processed_qualities:
+                            processed_qualities.add(quality_key)
+                            stream_qualities.append({
+                                'resolution': f"{width}x{height}",
+                                'width': int(width),
+                                'height': int(height),
+                                'bandwidth': int(bandwidth) if bandwidth else 0,
+                                'base_url': base_url,
+                                'id': rep_id,
+                                'mime_type': mime_type,
+                                'quality_label': ChzzkDownloader._get_quality_label(int(height))
+                            })
+
+                # Method 1: Process AdaptationSets
                 for adaptation_set in root.findall(".//mpd:AdaptationSet", namespaces=ns):
                     mime_type = adaptation_set.get('mimeType', '')
-                    
+
                     # Process video streams
                     if 'video' in mime_type:
-                        # Get base URL
+                        # Get base URL from AdaptationSet or root
                         adaptation_base_url = None
-                        base_url_element = adaptation_set.find(".//mpd:BaseURL", namespaces=ns)
+                        base_url_element = adaptation_set.find("mpd:BaseURL", namespaces=ns)
                         if base_url_element is None:
                             base_url_element = root.find(".//mpd:BaseURL", namespaces=ns)
                         if base_url_element is not None:
                             adaptation_base_url = base_url_element.text
-                        
-                        # Process each representation
-                        for representation in adaptation_set.findall(".//mpd:Representation", namespaces=ns):
-                            width = representation.get('width')
-                            height = representation.get('height')
-                            bandwidth = representation.get('bandwidth')
-                            rep_id = representation.get('id', '')
-                            
-                            # Get representation-specific base URL
-                            rep_base_url_element = representation.find(".//mpd:BaseURL", namespaces=ns)
-                            base_url = rep_base_url_element.text if rep_base_url_element is not None else adaptation_base_url
-                            
-                            if width and height and base_url:
-                                quality_key = f"{width}x{height}_{mime_type}"
-                                if quality_key not in processed_qualities:
-                                    processed_qualities.add(quality_key)
-                                    
-                                    quality_info = {
-                                        'resolution': f"{width}x{height}",
-                                        'width': int(width),
-                                        'height': int(height),
-                                        'bandwidth': int(bandwidth) if bandwidth else 0,
-                                        'base_url': base_url,
-                                        'id': rep_id,
-                                        'mime_type': mime_type,
-                                        'quality_label': ChzzkDownloader._get_quality_label(int(height))
-                                    }
-                                    stream_qualities.append(quality_info)
+
+                        for representation in adaptation_set.findall("mpd:Representation", namespaces=ns):
+                            _process_representation(representation, adaptation_base_url, mime_type)
+
+                # Method 2: If no streams found via AdaptationSets, try direct Representation search
+                if not stream_qualities:
+                    root_base_url = None
+                    root_base_url_el = root.find(".//mpd:BaseURL", namespaces=ns)
+                    if root_base_url_el is not None:
+                        root_base_url = root_base_url_el.text
+                    for representation in root.findall(".//mpd:Representation", namespaces=ns):
+                        _process_representation(representation, root_base_url)
                 
                 if stream_qualities:
                     # Test stream accessibility and filter out broken ones
@@ -268,12 +319,12 @@ class ChzzkDownloader:
             'Referer': 'https://chzzk.naver.com/',
             'Range': 'bytes=0-1023'  # Test with small range
         }
-        
+
         try:
             response = requests.get(stream_url, headers=headers, timeout=5)
             # Accept both 200 (full content) and 206 (partial content) as valid
             return response.status_code in [200, 206]
-        except:
+        except Exception:
             return False
 
     @staticmethod
@@ -421,7 +472,7 @@ class ChzzkDownloader:
             'reconnect_streamed': 1,
             'reconnect_delay_max': 5
         }
-        
+
         output_options = {
             'c': 'copy',
             'avoid_negative_ts': 'make_zero',
@@ -433,6 +484,7 @@ class ChzzkDownloader:
             ffmpeg
             .input(base_url, **input_options)
             .output(output_path, **output_options)
+            .overwrite_output()
             .global_args('-progress', 'pipe:2')
             .global_args('-nostats')
             .global_args('-loglevel', 'warning')
@@ -451,7 +503,7 @@ class ChzzkDownloader:
             'reconnect': 1,
             'reconnect_streamed': 1
         }
-        
+
         output_options = {
             'ss': start_time,
             't': total_duration,
@@ -463,6 +515,7 @@ class ChzzkDownloader:
             ffmpeg
             .input(base_url, **input_options)
             .output(output_path, **output_options)
+            .overwrite_output()
             .global_args('-progress', 'pipe:2')
             .global_args('-nostats')
             .global_args('-loglevel', 'warning')
@@ -477,15 +530,16 @@ class ChzzkDownloader:
         """Method 3: Basic options with re-encoding if needed"""
         process = (
             ffmpeg
-            .input(base_url, 
+            .input(base_url,
                    ss=start_time,
                    t=total_duration,
                    headers=f'User-Agent: {ChzzkDownloader.USER_AGENT}')
-            .output(output_path, 
+            .output(output_path,
                    vcodec='libx264',
                    acodec='aac',
                    preset='fast',
                    crf=23)
+            .overwrite_output()
             .global_args('-progress', 'pipe:2')
             .global_args('-nostats')
             .global_args('-loglevel', 'error')
@@ -564,51 +618,41 @@ class ChzzkDownloader:
             return False, f"다운로드 실패 (코드: {return_code}): {error_info}"
 
     @staticmethod
-    def _download_method_4(base_url: str, output_path: str, start_time: int, total_duration: int, 
+    def _download_method_4(base_url: str, output_path: str, start_time: int, total_duration: int,
                           progress_callback: Optional[Callable[[float], None]] = None) -> Tuple[bool, str]:
-        """Method 4: Direct HTTP download with Python requests"""
+        """Method 4: Direct HTTP download with Python requests, then extract segment with FFmpeg"""
         try:
             headers = {
                 'User-Agent': ChzzkDownloader.USER_AGENT,
                 'Referer': 'https://chzzk.naver.com/',
-                'Range': f'bytes={start_time * 1000000}-{(start_time + total_duration) * 1000000 + 1000000}'  # Rough byte range
             }
-            
-            # Try HTTP range request first
-            response = requests.get(base_url, headers=headers, stream=True, timeout=30)
-            
-            if response.status_code not in [200, 206]:
-                # If range request fails, try without range
-                headers.pop('Range', None)
-                response = requests.get(base_url, headers=headers, stream=True, timeout=30)
-                
-                if response.status_code != 200:
-                    return False, f"HTTP 오류: {response.status_code}"
-            
-            # Download to file
+
+            response = requests.get(base_url, headers=headers, stream=True, timeout=60)
+
+            if response.status_code != 200:
+                return False, f"HTTP 오류: {response.status_code}"
+
+            # Download full file to output_path, then extract segment in-place
             total_size = int(response.headers.get('content-length', 0))
             downloaded = 0
-            
+
             with open(output_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
+                for chunk in response.iter_content(chunk_size=65536):
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
-                        
+
                         if progress_callback and total_size > 0:
                             progress = (downloaded / total_size) * 100
                             progress_callback(min(progress, 100))
-            
-            # Verify file was created and has content
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                # If we downloaded the full file without range, extract the segment
-                if 'Range' not in headers:
-                    return ChzzkDownloader._extract_segment_post_download(output_path, start_time, total_duration)
-                else:
-                    return True, "다운로드 완료 (HTTP 방식)"
-            else:
+
+            # Verify download
+            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
                 return False, "다운로드된 파일이 비어있습니다"
-                
+
+            # Extract the requested segment using FFmpeg (renames to .temp, extracts back)
+            return ChzzkDownloader._extract_segment_post_download(output_path, start_time, total_duration)
+
         except Exception as e:
             return False, f"HTTP 다운로드 오류: {str(e)}"
     
@@ -626,6 +670,7 @@ class ChzzkDownloader:
                 ffmpeg
                 .input(temp_path, ss=start_time, t=total_duration)
                 .output(file_path, c='copy')
+                .overwrite_output()
                 .global_args('-loglevel', 'error')
                 .run_async(pipe_stdout=True, pipe_stderr=True)
             )
@@ -635,7 +680,7 @@ class ChzzkDownloader:
             # Cleanup temp file
             try:
                 os.remove(temp_path)
-            except:
+            except OSError:
                 pass
             
             if return_code == 0 and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
@@ -648,6 +693,6 @@ class ChzzkDownloader:
             try:
                 if os.path.exists(temp_path):
                     os.rename(temp_path, file_path)
-            except:
+            except OSError:
                 pass
             return False, f"세그먼트 추출 오류: {str(e)}"

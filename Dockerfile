@@ -1,11 +1,11 @@
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
+FROM nvidia/cuda:12.6.3-devel-ubuntu22.04
 
 # Python 설치
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-dev \
-    && ln -s /usr/bin/python3 /usr/bin/python
+    && ln -sf /usr/bin/python3 /usr/bin/python
 
 # 추가 패키지 설치
 RUN apt-get install -y \
@@ -18,16 +18,14 @@ RUN apt-get install -y \
 # 작업 디렉토리 설정
 WORKDIR /app
 
-# 의존성 파일 복사 및 설치
+# 의존성 파일 복사
 COPY requirements.txt .
 
 # 1단계: PyTorch 먼저 설치 (의존성 충돌 방지)
-# RTX 5090 지원을 위한 CUDA 12.8 우선 설치
-RUN pip install --pre --index-url https://download.pytorch.org/whl/nightly/cu128 torch torchaudio torchvision || \
-    echo "CUDA 12.8 nightly failed, trying alternatives..." && \
-    pip install --pre --index-url https://download.pytorch.org/whl/nightly/cu126 torch torchaudio torchvision || \
-    echo "CUDA 12.6 nightly failed, trying stable..." && \
-    pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu126 || \
+# CUDA 12.6 stable 우선 → CUDA 12.4 폴백 → CPU 폴백
+RUN pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu126 || \
+    echo "CUDA 12.6 failed, trying CUDA 12.4..." && \
+    pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu124 || \
     echo "All CUDA versions failed, installing CPU version..." && \
     pip install torch torchaudio torchvision
 

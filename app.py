@@ -100,24 +100,45 @@ class TranscriptionApp:
         except Exception as e:
             return f"[ERROR] 채팅 파싱 실패: {str(e)}"
     
-    def collect_chzzk_video_chats(self, video_id: str, auth_cookies: Optional[str] = None,
-                                 start_time_ms: Optional[int] = None, 
+    def collect_chzzk_video_chats(self, video_no: str, auth_cookies: Optional[str] = None,
+                                 start_time_ms: Optional[int] = None,
                                  end_time_ms: Optional[int] = None) -> List[str]:
         """지정된 시간 구간의 채팅 수집 (chat.py 방식)"""
-        base_url = f"https://api.chzzk.naver.com/service/v1/videos/{video_id}/chats"
+        # Try v1 first, fall back to v2 if needed
+        api_versions = ["v1", "v2"]
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
+                "Chrome/131.0.0.0 Safari/537.36"
             ),
-            "Referer": f"https://chzzk.naver.com/video/{video_id}",
+            "Referer": f"https://chzzk.naver.com/video/{video_no}",
         }
         if auth_cookies:
-            # 쿠키 정리
             cleaned_cookies = self.clean_cookies(auth_cookies)
             if cleaned_cookies:
                 headers["Cookie"] = cleaned_cookies
+
+        base_url = None
+        for version in api_versions:
+            test_url = f"https://api.chzzk.naver.com/service/{version}/videos/{video_no}/chats"
+            try:
+                test_resp = requests.get(test_url, headers=headers,
+                                        params={"playerMessageTime": start_time_ms or 0,
+                                                "previousVideoChatSize": 1},
+                                        timeout=10)
+                if test_resp.status_code == 200:
+                    test_data = test_resp.json()
+                    if test_data.get("code") == 200:
+                        base_url = test_url
+                        print(f"채팅 API {version} 사용")
+                        break
+            except Exception:
+                continue
+
+        if not base_url:
+            print("채팅 API를 사용할 수 없습니다.")
+            return []
 
         all_chats = []
         current_time = start_time_ms if start_time_ms is not None else 0
@@ -132,7 +153,7 @@ class TranscriptionApp:
             }
 
             try:
-                response = requests.get(base_url, headers=headers, params=params)
+                response = requests.get(base_url, headers=headers, params=params, timeout=15)
             except requests.exceptions.RequestException as e:
                 print(f"네트워크 오류: {e}")
                 break
@@ -145,10 +166,10 @@ class TranscriptionApp:
 
             try:
                 data = response.json()
-            except:
+            except (ValueError, KeyError):
                 print("JSON 파싱 실패")
                 break
-                
+
             if data.get("code") != 200:
                 print(f"API 응답 에러: {data.get('message', 'Unknown error')}")
                 break
@@ -164,29 +185,25 @@ class TranscriptionApp:
             # 시간 범위 필터링
             for chat in batch:
                 player_time = chat.get("playerMessageTime", 0)
-                
-                # 시작 시간 체크
+
                 if start_time_ms is not None and player_time < start_time_ms:
                     continue
-                    
-                # 종료 시간 체크
                 if end_time_ms is not None and player_time > end_time_ms:
                     continue
-                    
+
                 chat_message = self.extract_chat_message(chat, start_time_ms or 0)
                 all_chats.append((player_time, chat_message))
 
             next_time = content.get("nextPlayerMessageTime")
             if next_time is None or next_time <= current_time:
                 break
-                
+
             # 종료 시간을 넘어섰으면 중단
             if end_time_ms is not None and next_time > end_time_ms:
                 break
 
             current_time = next_time
             request_count += 1
-
             time.sleep(0.3)
 
         # 중복 제거 및 시간순 정렬
