@@ -69,8 +69,47 @@ pip install faster-whisper
 pip install simple-diarizer
 pip install "git+https://github.com/wenet-e2e/wespeaker.git"
 
-# 애플리케이션 실행
+# Streamlit 웹 UI 실행
 streamlit run video_transcriber.py
+```
+
+### CLI 사용법 (터미널)
+
+Streamlit 없이 터미널에서 직접 실행할 수 있습니다.
+
+#### 병렬 다운로드 + 트랜스크립션 (권장)
+
+치지직 CDN의 속도 제한(약 x1.5)을 우회하기 위해 영상을 구간별로 나눠 병렬 다운로드합니다.
+
+```bash
+# 기본 사용법 (0:00:00 ~ 3:30:00, 144p, 30분 단위 7개 병렬)
+python parallel_run.py https://chzzk.naver.com/video/1234567890
+
+# 옵션 지정
+python parallel_run.py https://chzzk.naver.com/video/1234567890 \
+  --start 00:30:00 --end 02:00:00 \
+  --quality worst \
+  --model large-v3-turbo \
+  --format srt \
+  --segment-min 30 --workers 7
+```
+
+#### 단일 스레드 다운로드 + 트랜스크립션
+
+```bash
+python cli_run.py https://chzzk.naver.com/video/1234567890 \
+  --start 00:00:00 --end 01:00:00 \
+  --quality worst --model large-v3-turbo
+```
+
+#### 채팅 수집
+
+```bash
+# 기본 사용법 (0:00:00 ~ 0:05:00)
+python collect_chat.py 1234567890
+
+# 시간 지정
+python collect_chat.py 1234567890 --start 00:00:00 --end 03:30:00 --output ./output/chat.txt
 ```
 
 ## 📖 사용 방법
@@ -160,7 +199,10 @@ Pyannote 사용 시 HuggingFace 토큰 설정:
 
 ```
 ├── app.py                          # 메인 Streamlit 애플리케이션
-├── video_transcriber.py            # 실행 진입점
+├── video_transcriber.py            # Streamlit 실행 진입점
+├── parallel_run.py                 # CLI: 병렬 다운로드 + 트랜스크립션
+├── cli_run.py                      # CLI: 단일 스레드 다운로드 + 트랜스크립션
+├── collect_chat.py                 # CLI: 채팅 수집
 ├── config_manager.py               # 설정 관리
 ├── chzzk_downloader.py             # 치지직 다운로더 (v3 API)
 ├── audio_processor.py              # 음성 처리 (faster-whisper + 화자분리)
