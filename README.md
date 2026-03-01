@@ -12,9 +12,9 @@
 - 성인 인증 영상 지원 (쿠키 인증)
 
 ### 🎙️ AI 음성인식
-- **OpenAI Whisper** 기반 고품질 음성인식
-- **화자분리** 기능 (여러 명이 말할 때 구분)
-- GPU 가속 지원 (CUDA/Apple Silicon)
+- **faster-whisper** 기반 고속 음성인식 (OpenAI Whisper 대비 4배 빠름)
+- **화자분리** 기능 - HuggingFace 토큰 없이 사용 가능 (WeSpeaker / Simple Diarizer)
+- GPU 가속 지원 (CUDA / Apple Silicon)
 - SRT 자막 파일 생성
 
 ### 💬 실시간 채팅 수집
@@ -25,7 +25,15 @@
 
 ## 🚀 빠른 시작
 
-### Docker 사용 (강력 권장)
+### Google Colab (가장 간편)
+
+GPU 설정이나 패키지 설치 없이 바로 사용할 수 있습니다.
+
+1. `chzzk_transcriber_colab.ipynb` 파일을 Google Colab에서 열기
+2. 런타임 → 런타임 유형 변경 → **T4 GPU** 선택
+3. 위에서부터 순서대로 셀 실행
+
+### Docker (로컬 서버용)
 
 ```bash
 # 저장소 클론
@@ -41,10 +49,7 @@ docker-compose up --build
 
 ### 로컬 설치 (고급 사용자용)
 
-⚠️ **중요 주의사항**: 
-- **Linux/macOS 환경 권장** - Windows에서는 호환성 문제가 있을 수 있습니다
-- **PyTorch 생태계의 복잡한 의존성**으로 인해 Docker 사용을 강력히 권장합니다
-- **FFmpeg 경로 문제** 등으로 Windows에서 예상치 못한 오류 발생 가능
+⚠️ **PyTorch 생태계의 복잡한 의존성**으로 인해 Docker 또는 Colab 사용을 권장합니다.
 
 ```bash
 # 가상환경 생성
@@ -52,12 +57,17 @@ python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # PyTorch 설치 (CUDA 버전에 맞게)
+# Blackwell (RTX 50시리즈):
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+# 구형 GPU (RTX 20/30/40시리즈):
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126
 
 # 나머지 의존성 설치
 pip install streamlit ffmpeg-python requests tqdm
-pip install numpy scipy soundfile librosa tiktoken einops
-pip install openai-whisper pyannote.audio
+pip install numpy scipy soundfile librosa
+pip install faster-whisper
+pip install simple-diarizer
+pip install "git+https://github.com/wenet-e2e/wespeaker.git"
 
 # 애플리케이션 실행
 streamlit run video_transcriber.py
@@ -67,12 +77,13 @@ streamlit run video_transcriber.py
 
 ### 1. 기본 설정 (사이드바)
 - **다운로드 경로**: 파일 저장 위치 설정
-- **Whisper 모델**: 음성인식 정확도 선택 
-  - **권장**: medium (RTX 3060+ 필요)
-  - **최고품질**: large-v3 (RTX 4070+ 필요)
-  - **저사양**: small (GTX 1660+ 가능)
+- **Whisper 모델**: 음성인식 정확도 선택
+  - **권장**: `large-v3-turbo` (속도와 정확도의 균형, VRAM ~6GB)
+  - **최고품질**: `large-v3` (VRAM ~10GB)
+  - **저사양**: `small` / `base` (VRAM ~1-2GB)
+- **화자분리 엔진**: WeSpeaker (추천) / Simple Diarizer / Pyannote
 - **네이버 쿠키**: 성인 인증용 (필요시)
-- **HuggingFace 토큰**: 화자분리용 (선택사항)
+- **HuggingFace 토큰**: Pyannote 화자분리용 (WeSpeaker/Simple Diarizer는 불필요)
 
 ### 2. 영상 정보 입력
 - **치지직 URL**: 다시보기 영상 주소 입력
@@ -113,39 +124,51 @@ URL: https://chzzk.naver.com/video/1234567890
 3. `NID_AUT`, `NID_SES` 값 복사
 4. 형식: `NID_AUT=값; NID_SES=값;`
 
-### HuggingFace 토큰 (화자분리용)
+### 화자분리 엔진 선택
+
+| 엔진 | HuggingFace 토큰 | 특징 |
+|------|:-:|------|
+| **WeSpeaker** | 불필요 | pyannote 내부에서도 사용하는 임베딩 모델. 추천 |
+| **Simple Diarizer** | 불필요 | SpeechBrain ECAPA-TDNN 기반. 설치 간편 |
+| **Pyannote** | 필요 | 가장 정확하지만 토큰 설정 필요 |
+
+Pyannote 사용 시 HuggingFace 토큰 설정:
 1. [huggingface.co](https://huggingface.co) 가입
 2. Settings → Access Tokens → New token
 3. pyannote/speaker-diarization 모델 접근 권한 필요
 
-### GPU 설정 및 Whisper 모델 권장사항
+### Whisper 모델 권장사항 (faster-whisper)
 
-#### NVIDIA GPU
-| 모델 | VRAM 요구량 | 처리 속도 | 정확도 | 권장 GPU |
-|------|-------------|-----------|--------|-----------|
+| 모델 | VRAM | 속도 | 정확도 | 권장 GPU |
+|------|:----:|:----:|:-----:|-----------|
 | tiny | ~1GB | 매우 빠름 | 낮음 | GTX 1050+ |
 | base | ~1GB | 빠름 | 보통 | GTX 1060+ |
 | small | ~2GB | 보통 | 좋음 | GTX 1660+ |
-| medium | ~5GB | 느림 | 매우 좋음 | RTX 3060+ |
-| large-v2 | ~10GB | 매우 느림 | 최고 | RTX 3080+ |
-| large-v3 | ~10GB | 매우 느림 | 최고 | RTX 4070+ |
+| medium | ~5GB | 보통 | 매우 좋음 | RTX 3060+ |
+| **large-v3-turbo** | **~6GB** | **빠름** | **매우 좋음** | **RTX 3060+** |
+| large-v3 | ~10GB | 느림 | 최고 | RTX 3080+ |
+
+> faster-whisper는 CTranslate2 기반으로 openai-whisper 대비 **4배 빠르고** 메모리를 절반만 사용합니다.
+> `large-v3-turbo`는 large-v3 대비 **6배 빠르면서** 비슷한 정확도를 제공합니다.
 
 #### 기타 설정
-- **Apple Silicon**: MPS 자동 감지 (M1/M2/M3 통합 메모리 사용)
-- **CPU 전용**: 자동 폴백 (매우 느림, 16GB+ RAM 권장)
+- **Apple Silicon**: MPS 자동 감지 (M1/M2/M3/M4 통합 메모리 사용)
+- **CPU 전용**: 자동 폴백 (INT8 양자화로 메모리 절약, 16GB+ RAM 권장)
+- **Google Colab**: T4 GPU 무료 사용 가능 (large-v3-turbo 권장)
 
 ## 📁 프로젝트 구조
 
 ```
-├── app.py                    # 메인 Streamlit 애플리케이션
-├── video_transcriber.py      # 실행 진입점
-├── config_manager.py         # 설정 관리
-├── chzzk_downloader.py       # 치지직 다운로더
-├── audio_processor.py        # 음성 처리
-├── utils.py                  # 유틸리티 함수
-├── Dockerfile                # Docker 설정
-├── docker-compose.yml        # Docker Compose 설정
-└── requirements.txt          # Python 의존성 (참조용)
+├── app.py                          # 메인 Streamlit 애플리케이션
+├── video_transcriber.py            # 실행 진입점
+├── config_manager.py               # 설정 관리
+├── chzzk_downloader.py             # 치지직 다운로더 (v3 API)
+├── audio_processor.py              # 음성 처리 (faster-whisper + 화자분리)
+├── utils.py                        # 유틸리티 함수
+├── chzzk_transcriber_colab.ipynb   # Google Colab 노트북
+├── Dockerfile                      # Docker 설정 (CUDA 12.8)
+├── docker-compose.yml              # Docker Compose 설정
+└── requirements.txt                # Python 의존성
 ```
 
 ## 🔍 지원 형식
@@ -195,15 +218,19 @@ URL: https://chzzk.naver.com/video/1234567890
 ## 🛠️ 개발 정보
 
 ### 기술 스택
-- **Frontend**: Streamlit
-- **AI**: OpenAI Whisper, pyannote.audio
-- **Video**: FFmpeg, requests (직접 스트림 다운로드)
+- **Frontend**: Streamlit (웹), Google Colab (노트북)
+- **음성인식**: faster-whisper (CTranslate2)
+- **화자분리**: WeSpeaker / Simple Diarizer / pyannote.audio
+- **영상 처리**: FFmpeg, requests (직접 스트림 다운로드)
+- **API**: Chzzk v3 (영상 정보), v1 (VOD 재생), v1 (채팅)
 - **Backend**: Python 3.10+
+- **GPU**: CUDA 12.8 (Blackwell 지원), cu126 폴백
 
 ### 의존성 관리
 - Docker의 복잡한 설치 순서로 의존성 충돌 해결
-- CUDA 버전별 폴백 체인 구현
+- CUDA 버전별 폴백 체인 구현 (cu128 → cu126 → CPU)
 - 선택적 의존성 지원 (GPU/CPU 자동 감지)
+- 화자분리 백엔드 자동 선택 (wespeaker → simple → pyannote)
 
 ## 📝 라이선스 및 면책조항
 
@@ -235,8 +262,10 @@ URL: https://chzzk.naver.com/video/1234567890
 - **[Google Gemini](https://gemini.google.com)** - 코드 최적화 및 문제 해결
 
 ### 오픈소스 라이브러리
-- **[OpenAI Whisper](https://github.com/openai/whisper)** - 음성인식
-- **[pyannote.audio](https://github.com/pyannote/pyannote-audio)** - 화자분리
+- **[faster-whisper](https://github.com/SYSTRAN/faster-whisper)** - 음성인식 (CTranslate2 기반)
+- **[WeSpeaker](https://github.com/wenet-e2e/wespeaker)** - 화자분리 (토큰 불필요)
+- **[simple-diarizer](https://github.com/cvqluu/simple_diarizer)** - 화자분리 (토큰 불필요)
+- **[pyannote.audio](https://github.com/pyannote/pyannote-audio)** - 화자분리 (토큰 필요)
 - **[Streamlit](https://streamlit.io)** - 웹 인터페이스
 - **[FFmpeg](https://ffmpeg.org)** - 미디어 처리
 
