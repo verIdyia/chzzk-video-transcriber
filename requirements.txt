@@ -1,5 +1,21 @@
-# PyTorch 관련 패키지는 Dockerfile에서 별도 설치
-# 의존성 충돌 방지를 위해 순서 중요
+# Core dependencies
+streamlit>=1.30.0
+requests>=2.31.0
+ffmpeg-python>=0.2.0
+tqdm>=4.66.0
 
-# 로컬 환경용 기본 패키지들 (Docker에서는 이미 설치됨)
-# Docker 사용 시 이 파일은 참조용으로만 사용됨
+# Audio/ML dependencies (PyTorch installed separately in Dockerfile)
+numpy>=1.24.0
+scipy>=1.11.0
+soundfile>=0.12.0
+librosa>=0.10.0
+
+# Whisper - faster-whisper (primary, 4x faster than openai-whisper)
+faster-whisper>=1.1.0
+
+# Speaker diarization - no HuggingFace token needed
+wespeaker @ git+https://github.com/wenet-e2e/wespeaker.git
+simple-diarizer
+
+# Speaker diarization - optional (requires HuggingFace token)
+# pyannote.audio>=3.1.0

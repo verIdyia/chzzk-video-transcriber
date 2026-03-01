@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any, List, Tuple
 # Import our modules
 from config_manager import ConfigManager
 from chzzk_downloader import ChzzkDownloader
-from audio_processor import AudioProcessor
+from audio_processor import AudioProcessor, WHISPER_MODELS, DIARIZATION_BACKENDS
 from utils import (
     validate_time_range, 
     generate_filename, 
@@ -100,24 +100,45 @@ class TranscriptionApp:
         except Exception as e:
             return f"[ERROR] 채팅 파싱 실패: {str(e)}"
     
-    def collect_chzzk_video_chats(self, video_id: str, auth_cookies: Optional[str] = None,
-                                 start_time_ms: Optional[int] = None, 
+    def collect_chzzk_video_chats(self, video_no: str, auth_cookies: Optional[str] = None,
+                                 start_time_ms: Optional[int] = None,
                                  end_time_ms: Optional[int] = None) -> List[str]:
         """지정된 시간 구간의 채팅 수집 (chat.py 방식)"""
-        base_url = f"https://api.chzzk.naver.com/service/v1/videos/{video_id}/chats"
+        # Try v1 first, fall back to v2 if needed
+        api_versions = ["v1", "v2"]
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
+                "Chrome/131.0.0.0 Safari/537.36"
             ),
-            "Referer": f"https://chzzk.naver.com/video/{video_id}",
+            "Referer": f"https://chzzk.naver.com/video/{video_no}",
         }
         if auth_cookies:
-            # 쿠키 정리
             cleaned_cookies = self.clean_cookies(auth_cookies)
             if cleaned_cookies:
                 headers["Cookie"] = cleaned_cookies
+
+        base_url = None
+        for version in api_versions:
+            test_url = f"https://api.chzzk.naver.com/service/{version}/videos/{video_no}/chats"
+            try:
+                test_resp = requests.get(test_url, headers=headers,
+                                        params={"playerMessageTime": start_time_ms or 0,
+                                                "previousVideoChatSize": 1},
+                                        timeout=10)
+                if test_resp.status_code == 200:
+                    test_data = test_resp.json()
+                    if test_data.get("code") == 200:
+                        base_url = test_url
+                        print(f"채팅 API {version} 사용")
+                        break
+            except Exception:
+                continue
+
+        if not base_url:
+            print("채팅 API를 사용할 수 없습니다.")
+            return []
 
         all_chats = []
         current_time = start_time_ms if start_time_ms is not None else 0
@@ -132,7 +153,7 @@ class TranscriptionApp:
             }
 
             try:
-                response = requests.get(base_url, headers=headers, params=params)
+                response = requests.get(base_url, headers=headers, params=params, timeout=15)
             except requests.exceptions.RequestException as e:
                 print(f"네트워크 오류: {e}")
                 break
@@ -145,10 +166,10 @@ class TranscriptionApp:
 
             try:
                 data = response.json()
-            except:
+            except (ValueError, KeyError):
                 print("JSON 파싱 실패")
                 break
-                
+
             if data.get("code") != 200:
                 print(f"API 응답 에러: {data.get('message', 'Unknown error')}")
                 break
@@ -164,29 +185,25 @@ class TranscriptionApp:
             # 시간 범위 필터링
             for chat in batch:
                 player_time = chat.get("playerMessageTime", 0)
-                
-                # 시작 시간 체크
+
                 if start_time_ms is not None and player_time < start_time_ms:
                     continue
-                    
-                # 종료 시간 체크
                 if end_time_ms is not None and player_time > end_time_ms:
                     continue
-                    
+
                 chat_message = self.extract_chat_message(chat, start_time_ms or 0)
                 all_chats.append((player_time, chat_message))
 
             next_time = content.get("nextPlayerMessageTime")
             if next_time is None or next_time <= current_time:
                 break
-                
+
             # 종료 시간을 넘어섰으면 중단
             if end_time_ms is not None and next_time > end_time_ms:
                 break
 
             current_time = next_time
             request_count += 1
-
             time.sleep(0.3)
 
         # 중복 제거 및 시간순 정렬
@@ -224,21 +241,41 @@ class TranscriptionApp:
             )
             
             # Whisper model selection
-            whisper_models = self.config_manager.get_whisper_models()
+            whisper_model_keys = list(WHISPER_MODELS.keys())
+            whisper_model_labels = [f"{k} - {v}" for k, v in WHISPER_MODELS.items()]
             current_model = self.config_manager.get("whisper_model")
-            whisper_model = st.selectbox(
+            default_idx = whisper_model_keys.index(current_model) if current_model in whisper_model_keys else 0
+            whisper_model_idx = st.selectbox(
                 "Whisper 모델",
-                whisper_models,
-                index=whisper_models.index(current_model) if current_model in whisper_models else 1
+                range(len(whisper_model_keys)),
+                format_func=lambda x: whisper_model_labels[x],
+                index=default_idx
             )
-            
-            # HuggingFace token
-            hf_token = st.text_input(
-                "HuggingFace 토큰 (화자분리용)",
-                value=self.config_manager.get("huggingface_token"),
-                type="password",
-                help="화자분리 기능을 사용하려면 HuggingFace 토큰이 필요합니다."
+            whisper_model = whisper_model_keys[whisper_model_idx]
+
+            # Diarization backend selection
+            diar_keys = list(DIARIZATION_BACKENDS.keys())
+            diar_labels = list(DIARIZATION_BACKENDS.values())
+            diarization_backend = st.selectbox(
+                "화자분리 엔진",
+                range(len(diar_keys)),
+                format_func=lambda x: diar_labels[x],
+                index=0,
+                help="WeSpeaker/Simple Diarizer는 토큰 없이 사용 가능합니다."
             )
+            diarization_backend = diar_keys[diarization_backend]
+
+            # HuggingFace token (only needed for pyannote)
+            hf_token = ""
+            if diarization_backend == "pyannote":
+                hf_token = st.text_input(
+                    "HuggingFace 토큰 (Pyannote용)",
+                    value=self.config_manager.get("huggingface_token"),
+                    type="password",
+                    help="Pyannote 화자분리는 HuggingFace 토큰이 필요합니다."
+                )
+            else:
+                hf_token = self.config_manager.get("huggingface_token")
             
             # Naver cookies
             cookies_input = st.text_area(
@@ -294,13 +331,14 @@ class TranscriptionApp:
                     "naver_cookies": cookies_input,
                     "output_format": output_format,
                     "default_quality": default_quality,
-                    "use_gpu": use_gpu
+                    "use_gpu": use_gpu,
+                    "diarization_backend": diarization_backend
                 }
                 if self.config_manager.save_config(new_config):
                     st.success("설정이 저장되었습니다!")
                 else:
                     st.warning("설정 저장에 실패했지만 세션에서는 적용됩니다.")
-            
+
             return {
                 "download_path": download_path,
                 "whisper_model": whisper_model,
@@ -308,7 +346,8 @@ class TranscriptionApp:
                 "cookies_input": cookies_input,
                 "output_format": output_format,
                 "default_quality": default_quality,
-                "use_gpu": use_gpu
+                "use_gpu": use_gpu,
+                "diarization_backend": diarization_backend
             }
 
     def _display_gpu_status(self, use_gpu: bool):
@@ -357,11 +396,14 @@ class TranscriptionApp:
             end_time = st.text_input("종료 시간 (HH:MM:SS)", value="00:01:00")
         
         # Speaker diarization option
+        diar_backend = config.get("diarization_backend", "auto")
+        diar_needs_token = diar_backend == "pyannote"
+        diar_available = (not diar_needs_token) or bool(config.get("hf_token"))
         enable_diarization = st.checkbox(
-            "화자분리 사용", 
-            value=bool(config["hf_token"]),
-            disabled=not bool(config["hf_token"]),
-            help="HuggingFace 토큰이 필요합니다."
+            "화자분리 사용",
+            value=diar_available and diar_backend != "none",
+            disabled=not diar_available,
+            help="WeSpeaker/Simple Diarizer는 토큰 없이 사용 가능. Pyannote는 HuggingFace 토큰 필요."
         )
         
         # Chat collection option
@@ -630,9 +672,10 @@ class TranscriptionApp:
         progress_bar.progress(55)
         
         audio_processor = AudioProcessor(
-            config["whisper_model"],
-            config["hf_token"] if enable_diarization else None,
-            config["use_gpu"]
+            whisper_model=config["whisper_model"],
+            hf_token=config["hf_token"] if enable_diarization else None,
+            diarization_backend=config.get("diarization_backend", "auto") if enable_diarization else "none",
+            use_gpu=config["use_gpu"]
         )
         
         success, message = audio_processor.extract_audio(video_path, audio_path)

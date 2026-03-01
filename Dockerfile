@@ -1,11 +1,11 @@
-FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 # Python 설치
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-dev \
-    && ln -s /usr/bin/python3 /usr/bin/python
+    && ln -sf /usr/bin/python3 /usr/bin/python
 
 # 추가 패키지 설치
 RUN apt-get install -y \
@@ -18,15 +18,13 @@ RUN apt-get install -y \
 # 작업 디렉토리 설정
 WORKDIR /app
 
-# 의존성 파일 복사 및 설치
+# 의존성 파일 복사
 COPY requirements.txt .
 
-# 1단계: PyTorch 먼저 설치 (의존성 충돌 방지)
-# RTX 5090 지원을 위한 CUDA 12.8 우선 설치
-RUN pip install --pre --index-url https://download.pytorch.org/whl/nightly/cu128 torch torchaudio torchvision || \
-    echo "CUDA 12.8 nightly failed, trying alternatives..." && \
-    pip install --pre --index-url https://download.pytorch.org/whl/nightly/cu126 torch torchaudio torchvision || \
-    echo "CUDA 12.6 nightly failed, trying stable..." && \
+# 1단계: PyTorch 설치
+# CUDA 12.8 (블랙웰 RTX 50시리즈 지원) → CUDA 12.6 폴백 (구형 GPU) → CPU 폴백
+RUN pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu128 || \
+    echo "CUDA 12.8 failed, trying CUDA 12.6..." && \
     pip install torch torchaudio torchvision --index-url https://download.pytorch.org/whl/cu126 || \
     echo "All CUDA versions failed, installing CPU version..." && \
     pip install torch torchaudio torchvision
@@ -34,15 +32,20 @@ RUN pip install --pre --index-url https://download.pytorch.org/whl/nightly/cu128
 # 2단계: 기본 패키지 설치
 RUN pip install --no-cache-dir streamlit ffmpeg-python requests tqdm
 
-# 3단계: PyTorch 기반 패키지 설치 (의존성 충돌 방지)
-RUN pip install --no-cache-dir openai-whisper --no-deps || pip install openai-whisper
-RUN pip install --no-cache-dir pyannote.audio --no-deps || pip install pyannote.audio
+# 3단계: faster-whisper 설치 (openai-whisper 대체, 4배 빠름)
+RUN pip install --no-cache-dir faster-whisper
 
-# 4단계: 누락된 필수 의존성 수동 설치
-RUN pip install numpy typing_extensions scipy librosa soundfile asteroid-filterbanks speechbrain torchmetrics lightning pytorch-lightning tiktoken einops
+# 4단계: 화자분리 - 토큰 불필요 옵션
+RUN pip install --no-cache-dir simple-diarizer
+RUN pip install --no-cache-dir "git+https://github.com/wenet-e2e/wespeaker.git" || true
 
-# 5단계: pyannote.audio 의존성 완성
-RUN pip install omegaconf "pyannote.core>=5.0.0" "pyannote.database>=5.0.1" "pyannote.metrics>=3.2" "pyannote.pipeline>=3.0.1" "pytorch-metric-learning>=2.1.0" "rich>=12.0.0" "semver>=3.0.0" tensorboardX "torch-audiomentations>=0.11.0"
+# 5단계: 화자분리 - pyannote (HuggingFace 토큰 필요, 선택사항)
+RUN pip install --no-cache-dir pyannote.audio --no-deps || true
+RUN pip install --no-cache-dir omegaconf "pyannote.core>=5.0.0" "pyannote.database>=5.0.1" \
+    "pyannote.pipeline>=3.0.1" "rich>=12.0.0" "semver>=3.0.0" tensorboardX || true
+
+# 6단계: 추가 의존성
+RUN pip install --no-cache-dir numpy scipy librosa soundfile
 
 # 애플리케이션 파일 복사
 COPY video_transcriber.py .
