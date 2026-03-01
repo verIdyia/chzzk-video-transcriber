@@ -52,6 +52,7 @@ Thumbs.db
 .directory
 
 # Project specific
+output/
 downloads/*.mp4
 downloads/*.wav
 downloads/*.txt

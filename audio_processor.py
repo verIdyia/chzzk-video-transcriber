@@ -34,19 +34,19 @@ PYANNOTE_AVAILABLE = False
 try:
     import wespeaker
     WESPEAKER_AVAILABLE = True
-except ImportError:
+except Exception:
     pass
 
 try:
     from simple_diarizer.diarizer import Diarizer
     SIMPLE_DIARIZER_AVAILABLE = True
-except ImportError:
+except Exception:
     pass
 
 try:
     from pyannote.audio import Pipeline
     PYANNOTE_AVAILABLE = True
-except ImportError:
+except Exception:
     pass
 
 try:
